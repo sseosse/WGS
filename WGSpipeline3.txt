@@ -1,0 +1,63 @@
+#1 raw data download
+/BiO/Install/sratoolkit.2.9.6-ubuntu64/bin/fastq-dump --gzip --split-3 SRR490122
+
+
+#2 trimming으로 퀄리티 올리기
+java -jar /BiO/Install/Trimmomatic-0.38/trimmomatic-0.38.jar PE -threads 4 -phred33 HSRR1002940.r1.temp.fq HSRR1002940.r2.temp.fq HSRR1002940.r1.trim.fq HSRR1002940.r1.unpair.fq HSRR1002940.r2.trim.fq HSRR1002940.r2.unpair.fq ILLUMINACLIP:/BiO/Install/Trimmomatic-0.38/adapters/TruSeq3-PE-2.fa:2:151:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36
+
+
+#3 퀄리티 체크해보기
+/BiO/Install/FastQC_0.10.1/fastqc -t 4 --nogroup HSRR1002940.r1.temp.fq
+
+
+#4 bam툴로 매핑해서 sam파일 만들기
+ bwa mem -t 4 -R '@RG\tPL:illumina\tID:YUHL\tSM:SRR2069499\tLB:HiSeq' /BiO/Education/WGS/REF/hg19.fa HSRR2069499_1.trim.fastq.gz HSRR2069499_2.trim.fastq.gz > HSRR2069499.sam
+
+
+#5 sam을 sorting해서 bam 만들기
+java -jar /BiO/Install/picard-tools-2.22.3/picard.jar AddOrReplaceReadGroups TMP_DIR=TEMP_PICARD VALIDATION_STRINGENCY=LENIENT SO=coordinate I=HSRR1002940.sam O=HSRR1002940_sorted.bam RGID=SRR1002940 RGLB=Hiseq RGPL=Illumina RGPU=unit1 RGSM=SRR1002940 CREATE_INDEX=true 
+
+
+#6 duplicate 제거(baa -> sam)
+java -jar /BiO/Install/picard-tools-2.22.3/picard.jar MarkDuplicates TMP_DIR=TEMP_PICARD VALIDATION_STRINGENCY=LENIENT I=HSRR1002940_sorted.bam O=HSRR1002940_dedup.sam M=SRR1002940.duplicate_metrics REMOVE_DUPLICATES=true AS=true
+
+
+#7 다시 bam으로
+java -jar /BiO/Install/picard-tools-2.22.3/picard.jar SortSam TMP_DIR=TEMP_PICARD VALIDATION_STRINGENCY=LENIENT SO=coordinate I=HSRR1002940_dedup.sam O=HSRR1002940_dedup.bam CREATE_INDEX=true
+
+
+#8~9 BQSR 1st pass dbsnp와 비교해서 염기  보정
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar BaseRecalibrator -R /BiO/Education/WGS/REF/hg19.fa -I HSRR1002940_dedup.bam --known-sites /BiO/Education/WGS/REF/dbsnp_138.hg19.vcf --known-sites /BiO/Education/WGS/REF/1000GENOMES-phase_3_indel.vcf -O HSRR1002940_recal_pass1.table
+
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar ApplyBQSR -R /BiO/Education/WGS/REF/hg19.fa -I HSRR1002940_dedup.bam --bqsr-recal-file HSRR1002940_recal_pass1.table -O HSRR1002940_recal_pass1.bam
+
+
+#10~11 나온 파일로 한번 더 보정
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar BaseRecalibrator -R /BiO/Education/WGS/REF/hg19.fa -I HSRR1002940_pass1.bam --known-sites /BiO/Education/WGS/REF/dbsnp_138.hg19.vcf --known-sites /BiO/Education/WGS/REF/1000GENOMES-phase_3_indel.vcf -O HSRR1002940_recal_pass2.table
+
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar ApplyBQSR -R /BiO/Education/WGS/REF/hg19.fa -I HSRR1002940_pass1.bam -bqsr HSRR1002940_recal_pass2.table -O HSRR1002940_recal_pass2.bam
+
+
+#12 snps 와 indel 변이 발굴 후 vcf 파일 생성
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar HaplotypeCaller -R /BiO/Education/WGS/REF/hg19.fa -I HSRR1002940_pass2.bam -bqsr -O HSRR1002940.rawVariants.g.vcf -ERC GVCF --standard-min-confidence-threshold-for-calling 20
+
+
+#13 genotype 에 적용 (페이징) (어느 크로모좀에서 왔는지) |=phased /=unphased
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar GenotypeGVCFs -R /BiO/Education/WGS/REF/hg19.fa -V HSRR1002940.rawVarients.g.vcf -O HSRR1002940_genotype.vcf
+
+
+#14 snps/indel 추출
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar SelectVariants -R /BiO/Education/WGS/REF/hg19.fa -V HSRR1002940_genotype.vcf --select-type-to-include SNP -O HSRR1002940.rawSNPs.vcf
+
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar SelectVariants -R /BiO/Education/WGS/REF/hg19.fa -V HSRR1002940_genotype.vcf --select-type-to-include INDEL -O HSRR1002940.rawSNPs.vcf
+
+
+#15 snps/indels 필터링
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar VariantFiltration -R /BiO/Education/WGS/REF/hg19.fa -V HSRR1002940.rawSNPs.vcf -O HSRR1002940.rawSNPs.filtered.vcf --filter-name "." --filter-expression "QD < 2.0 || FS > 60.0 || MQ < 40.0 || HaplotypeScore > 13.0 || MappingQualityRankSum < -12.5 || ReadPosRankSum < -8.0"
+
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar VariantFiltration -R /BiO/Education/WGS/REF/hg19.fa -V HSRR1002940.rawINDELs.vcf -O HSRR1002940.rawINDELs.filtered.vcf --filter-name "." --filter-expression "QD < 2.0 || FS > 200.0 || ReadPosRankSum < -8.0"
+
+
+#16 snps + indels 
+java -Xmx8g -jar /BiO/Install/gatk-4.1.7.0/gatk-package-4.1.7.0-local.jar SortVcf -I HSRR1002940.rawSNPs.filtered.vcf -I HSRR1002940.rawINDELs.filtered.vcf -O HSRR1002940.filtered.variant.vcf
+
